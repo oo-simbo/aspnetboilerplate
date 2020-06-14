@@ -61,25 +61,26 @@ namespace Abp.EntityHistory
                 }
 
                 var shouldAuditEntity = IsTypeOfAuditedEntity(typeOfEntity);
-                bool? shouldAuditOwnerProperty = null;
-                bool? shouldAuditOwnerEntity = null;
                 if (shouldAuditEntity.HasValue && !shouldAuditEntity.Value)
                 {
                     continue;
                 }
-                else if (!shouldAuditEntity.HasValue && entityEntry.Metadata.IsOwned())
+
+                bool? shouldAuditOwnerEntity = null;
+                bool? shouldAuditOwnerProperty = null;
+                if (!shouldAuditEntity.HasValue && entityEntry.Metadata.IsOwned())
                 {
                     // Check if owner entity has auditing attribute
-                    var foreignKey = entityEntry.Metadata.GetForeignKeys().First();
-                    var ownerEntity = foreignKey.PrincipalEntityType.ClrType;
+                    var ownerForeignKey = entityEntry.Metadata.GetForeignKeys().First(fk => fk.IsOwnership);
+                    var ownerEntityType = ownerForeignKey.PrincipalEntityType.ClrType;
 
-                    shouldAuditOwnerEntity = IsTypeOfAuditedEntity(ownerEntity);
+                    shouldAuditOwnerEntity = IsTypeOfAuditedEntity(ownerEntityType);
                     if (shouldAuditOwnerEntity.HasValue && !shouldAuditOwnerEntity.Value)
                     {
                         continue;
                     }
 
-                    var ownerPropertyInfo = foreignKey.PrincipalToDependent.PropertyInfo;
+                    var ownerPropertyInfo = ownerForeignKey.PrincipalToDependent.PropertyInfo;
                     shouldAuditOwnerProperty = IsAuditedPropertyInfo(ownerPropertyInfo);
                     if (shouldAuditOwnerProperty.HasValue && !shouldAuditOwnerProperty.Value)
                     {
@@ -93,9 +94,11 @@ namespace Abp.EntityHistory
                     continue;
                 }
 
-                var shouldSaveAuditedPropertiesOnly = !(shouldAuditEntity.HasValue || shouldAuditOwnerEntity.HasValue || shouldAuditOwnerProperty.HasValue) &&
-                                                      !entityEntry.IsCreated() &&
-                                                      !entityEntry.IsDeleted();
+                var isAuditableEntity = (shouldAuditEntity.HasValue && shouldAuditEntity.Value) ||
+                                        (shouldAuditOwnerEntity.HasValue && shouldAuditOwnerEntity.Value) ||
+                                        (shouldAuditOwnerProperty.HasValue && shouldAuditOwnerProperty.Value);
+                var isTrackableEntity = shouldTrackEntity.HasValue && shouldTrackEntity.Value;
+                var shouldSaveAuditedPropertiesOnly = !isAuditableEntity && !isTrackableEntity;
                 var propertyChanges = GetPropertyChanges(entityEntry, shouldSaveAuditedPropertiesOnly);
                 if (propertyChanges.Count == 0)
                 {
@@ -176,7 +179,6 @@ namespace Abp.EntityHistory
                     break;
                 case EntityState.Detached:
                 case EntityState.Unchanged:
-                    Logger.DebugFormat("Skipping Entity Change Creation for {0}, Id:{1}", entityTypeFullName, entityId);
                     return null;
                 default:
                     Logger.ErrorFormat("Unexpected {0} - {1}", nameof(entityEntry.State), entityEntry.State);
@@ -214,8 +216,10 @@ namespace Abp.EntityHistory
                     continue;
                 }
 
-                var shouldSaveProperty = property.IsShadowProperty() ||
-                                         (IsAuditedPropertyInfo(property.PropertyInfo) ?? !auditedPropertiesOnly);
+                var shouldSaveProperty = property.IsShadowProperty() // i.e. property.PropertyInfo == null
+                    ? !auditedPropertiesOnly
+                    : IsAuditedPropertyInfo(property.PropertyInfo) ?? !auditedPropertiesOnly;
+
                 if (shouldSaveProperty)
                 {
                     var propertyEntry = entityEntry.Property(property.Name);
